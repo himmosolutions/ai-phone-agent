@@ -1,182 +1,144 @@
-{\rtf1\ansi\ansicpg1252\cocoartf2822
-\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
-{\colortbl;\red255\green255\blue255;}
-{\*\expandedcolortbl;;}
-\margl1440\margr1440\vieww11520\viewh8400\viewkind0
-\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+import express from "express";
+import http from "http";
+import { WebSocketServer } from "ws";
+import twilio from "twilio";
+import dotenv from "dotenv";
+import WebSocket from "ws";
 
-\f0\fs24 \cf0 import express from "express";\
-import http from "http";\
-import \{ WebSocketServer \} from "ws";\
-import twilio from "twilio";\
-import dotenv from "dotenv";\
-import WebSocket from "ws";\
-\
-dotenv.config();\
-\
-const app = express();\
-app.use(express.urlencoded(\{ extended: false \}));\
-app.use(express.json());\
-\
-const PORT = process.env.PORT || 3000;\
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL;\
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;\
-\
-if (!PUBLIC_BASE_URL || !OPENAI_API_KEY) \{\
-  throw new Error("Missing PUBLIC_BASE_URL or OPENAI_API_KEY");\
-\}\
-\
-/**\
- * =========================\
- * 1) TWILIO VOICE WEBHOOK\
- * =========================\
- * When a call comes in, Twilio hits this endpoint.\
- * We respond with TwiML that starts a Media Stream.\
- */\
-app.post("/incoming-call", (req, res) => \{\
-  const VoiceResponse = twilio.twiml.VoiceResponse;\
-  const twiml = new VoiceResponse();\
-\
-  twiml.say(\
-    \{ voice: "alice" \},\
-    "Hello. Please hold while I connect you to our automated assistant."\
-  );\
-\
-  const start = twiml.start();\
-  start.stream(\{\
-    url: `$\{PUBLIC_BASE_URL.replace("https://", "wss://")\}/twilio-stream`,\
-  \});\
-\
-  // Keep the call open\
-  twiml.pause(\{ length: 60 \});\
-\
-  res.type("text/xml");\
-  res.send(twiml.toString());\
-\});\
-\
-/**\
- * =========================\
- * 2) SERVER + WEBSOCKETS\
- * =========================\
- */\
-const server = http.createServer(app);\
-\
-const wss = new WebSocketServer(\{\
-  server,\
-  path: "/twilio-stream",\
-\});\
-\
-wss.on("connection", (twilioWs) => \{\
-  console.log("\uc0\u55357 \u56586  Twilio Media Stream connected");\
-\
-  // OpenAI Realtime WebSocket\
-  const openaiWs = new WebSocket(\
-    "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",\
-    \{\
-      headers: \{\
-        Authorization: `Bearer $\{OPENAI_API_KEY\}`,\
-        "OpenAI-Beta": "realtime=v1",\
-      \},\
-    \}\
-  );\
-\
-  let openaiReady = false;\
-\
-  openaiWs.on("open", () => \{\
-    console.log("\uc0\u55358 \u56800  OpenAI Realtime connected");\
-    openaiReady = true;\
-\
-    // Configure session\
-    openaiWs.send(\
-      JSON.stringify(\{\
-        type: "session.update",\
-        session: \{\
-          instructions:\
-            "You are a professional AI phone assistant. Be polite, concise, and helpful. If unsure, ask clarifying questions. If you cannot help, offer to take a message.",\
-          modalities: ["text", "audio"],\
-          input_audio_format: "g711_ulaw",\
-          output_audio_format: "g711_ulaw",\
-          turn_detection: \{ type: "server_vad" \},\
-        \},\
-      \})\
-    );\
-  \});\
-\
-  /**\
-   * =========================\
-   * OpenAI \uc0\u8594  Twilio (AI SPEAKS)\
-   * =========================\
-   */\
-  openaiWs.on("message", (data) => \{\
-    let msg;\
-    try \{\
-      msg = JSON.parse(data.toString());\
-    \} catch \{\
-      return;\
-    \}\
-\
-    const audio =\
-      msg?.type === "response.audio.delta"\
-        ? msg.delta\
-        : msg?.type === "response.output_audio.delta"\
-        ? msg.delta\
-        : null;\
-\
-    if (audio) \{\
-      twilioWs.send(\
-        JSON.stringify(\{\
-          event: "media",\
-          media: \{ payload: audio \},\
-        \})\
-      );\
-    \}\
-  \});\
-\
-  /**\
-   * =========================\
-   * Twilio \uc0\u8594  OpenAI (CALLER SPEAKS)\
-   * =========================\
-   */\
-  twilioWs.on("message", (data) => \{\
-    let msg;\
-    try \{\
-      msg = JSON.parse(data.toString());\
-    \} catch \{\
-      return;\
-    \}\
-\
-    if (msg.event === "media" && openaiReady) \{\
-      openaiWs.send(\
-        JSON.stringify(\{\
-          type: "input_audio_buffer.append",\
-          audio: msg.media.payload,\
-        \})\
-      );\
-    \}\
-\
-    if (msg.event === "stop") \{\
-      console.log("\uc0\u55357 \u56542  Call ended");\
-      openaiWs.close();\
-      twilioWs.close();\
-    \}\
-  \});\
-\
-  twilioWs.on("close", () => \{\
-    console.log("\uc0\u10060  Twilio stream closed");\
-    openaiWs.close();\
-  \});\
-\
-  openaiWs.on("close", () => \{\
-    console.log("\uc0\u10060  OpenAI connection closed");\
-  \});\
-\});\
-\
-/**\
- * =========================\
- * START SERVER\
- * =========================\
- */\
-server.listen(PORT, () => \{\
-  console.log(`\uc0\u55357 \u56960  Server running on port $\{PORT\}`);\
-\});\
+dotenv.config();
+
+const app = express();
+app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
+
+const PORT = process.env.PORT || 3000;
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+if (!PUBLIC_BASE_URL || !OPENAI_API_KEY) {
+  throw new Error("Missing PUBLIC_BASE_URL or OPENAI_API_KEY");
 }
+
+app.post("/incoming-call", (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const twiml = new VoiceResponse();
+
+  twiml.say(
+    { voice: "alice" },
+    "Hello. Please hold while I connect you to our automated assistant."
+  );
+
+  const start = twiml.start();
+  start.stream({
+    url: `${PUBLIC_BASE_URL.replace("https://", "wss://")}/twilio-stream`,
+  });
+
+  twiml.pause({ length: 60 });
+
+  res.type("text/xml");
+  res.send(twiml.toString());
+});
+
+const server = http.createServer(app);
+
+const wss = new WebSocketServer({
+  server,
+  path: "/twilio-stream",
+});
+
+wss.on("connection", (twilioWs) => {
+  console.log("Twilio Media Stream connected");
+
+  const openaiWs = new WebSocket(
+    "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
+    {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "OpenAI-Beta": "realtime=v1",
+      },
+    }
+  );
+
+  let openaiReady = false;
+
+  openaiWs.on("open", () => {
+    console.log("OpenAI Realtime connected");
+    openaiReady = true;
+
+    openaiWs.send(
+      JSON.stringify({
+        type: "session.update",
+        session: {
+          instructions:
+            "You are a professional AI phone assistant. Be polite, concise, and helpful. If unsure, ask clarifying questions. If you cannot help, offer to take a message.",
+          modalities: ["text", "audio"],
+          input_audio_format: "g711_ulaw",
+          output_audio_format: "g711_ulaw",
+          turn_detection: { type: "server_vad" },
+        },
+      })
+    );
+  });
+
+  openaiWs.on("message", (data) => {
+    let msg;
+    try {
+      msg = JSON.parse(data.toString());
+    } catch {
+      return;
+    }
+
+    const audio =
+      msg?.type === "response.audio.delta"
+        ? msg.delta
+        : msg?.type === "response.output_audio.delta"
+        ? msg.delta
+        : null;
+
+    if (audio) {
+      twilioWs.send(
+        JSON.stringify({
+          event: "media",
+          media: { payload: audio },
+        })
+      );
+    }
+  });
+
+  twilioWs.on("message", (data) => {
+    let msg;
+    try {
+      msg = JSON.parse(data.toString());
+    } catch {
+      return;
+    }
+
+    if (msg.event === "media" && openaiReady) {
+      openaiWs.send(
+        JSON.stringify({
+          type: "input_audio_buffer.append",
+          audio: msg.media.payload,
+        })
+      );
+    }
+
+    if (msg.event === "stop") {
+      console.log("Call ended");
+      openaiWs.close();
+      twilioWs.close();
+    }
+  });
+
+  twilioWs.on("close", () => {
+    console.log("Twilio stream closed");
+    openaiWs.close();
+  });
+
+  openaiWs.on("close", () => {
+    console.log("OpenAI connection closed");
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
